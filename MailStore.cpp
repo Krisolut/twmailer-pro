@@ -8,13 +8,17 @@
 #include <unistd.h>
 
 namespace {
-bool isDirectory(const std::string &path) {
-    struct stat st {};
-    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-}
-} // namespace
+    // Hilfsfunktion: prüft, ob ein Pfad ein Verzeichnis ist
+    bool isDirectory(const string &path) {
+        struct stat st {};
+        return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    }
+} 
 
-bool MailStore::isValidUsername(const std::string &u) {
+using namespace std;
+
+// Username-Regeln: nicht leer, max 8 Zeichen, nur [a-z0-9]
+bool MailStore::isValidUsername(const string &u) {
     if (u.empty() || u.size() > 8) {
         return false;
     }
@@ -26,40 +30,52 @@ bool MailStore::isValidUsername(const std::string &u) {
     return true;
 }
 
-MailStore::MailStore(const std::string &baseDir) : baseDir_(baseDir) {
+// Konstruktor: Basisverzeichnis setzen und sicherstellen, dass es existiert
+MailStore::MailStore(const string &baseDir) : baseDir_(baseDir) {
     mkdirIfNotExists(baseDir_);
 }
 
-bool MailStore::storeMessage(const std::string &sender,
-                             const std::string &receiver,
-                             const std::string &subject,
-                             const std::string &body) {
+// Nachricht als Datei speichern: eine .msg Datei pro Mail
+bool MailStore::storeMessage(const string &sender,
+                             const string &receiver,
+                             const string &subject,
+                             const string &body) {
+    // Sender/Empfänger validieren
     if (!isValidUsername(receiver) || !isValidUsername(sender)) {
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(mtx_);
+    lock_guard<mutex> lock(mtx_);
 
-    std::string userDir = baseDir_ + "/" + receiver;
+    // Benutzerverzeichnis anlegen (falls noch nicht vorhanden)
+    string userDir = baseDir_ + "/" + receiver;
     mkdirIfNotExists(userDir);
 
+    // Nächste freie Message-ID ermitteln
     int nextId = getNextMessageId(userDir);
     if (nextId <= 0) {
         return false;
     }
 
-    std::string filename = userDir + "/" + std::to_string(nextId) + ".msg";
+    // Dateiname z.B. "base/receiver/1.msg"
+    string filename = userDir + "/" + to_string(nextId) + ".msg";
     FILE *f = fopen(filename.c_str(), "w");
     if (!f) {
         return false;
     }
 
+    // Format:
+    // 1: Sender
+    // 2: Empfänger
+    // 3: Betreff
+    // 4+: Body
     fprintf(f, "%s\n", sender.c_str());
     fprintf(f, "%s\n", receiver.c_str());
     fprintf(f, "%s\n", subject.c_str());
 
     if (!body.empty()) {
         fprintf(f, "%s", body.c_str());
+        // Sicherstellen, dass der Body mit \n endet
         if (body.back() != '\n') {
             fprintf(f, "\n");
         }
@@ -69,18 +85,19 @@ bool MailStore::storeMessage(const std::string &sender,
     return true;
 }
 
-bool MailStore::listMessages(const std::string &username, std::vector<std::string> &subjects) {
+// Liste der Betreffzeilen eines Users holen
+bool MailStore::listMessages(const string &username, vector<string> &subjects) {
     subjects.clear();
 
     if (!isValidUsername(username)) {
-        return true; // kein Fehler → einfach 0 Mails
+        return true; // Kein Fehler → einfach keine Mails
     }
 
-    std::lock_guard<std::mutex> lock(mtx_);
+    lock_guard<mutex> lock(mtx_);
 
-    std::string userDir = baseDir_ + "/" + username;
+    string userDir = baseDir_ + "/" + username;
     if (!isDirectory(userDir)) {
-        return true;
+        return true; // User hat (noch) keinen Mail-Ordner
     }
 
     DIR *dir = opendir(userDir.c_str());
@@ -88,12 +105,13 @@ bool MailStore::listMessages(const std::string &username, std::vector<std::strin
         return true;
     }
 
-    std::vector<int> ids;
+    vector<int> ids;
     struct dirent *entry;
 
+    // Alle *.msg Dateien einsammeln und IDs extrahieren
     while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_type == DT_REG) {
-            std::string name = entry->d_name;
+        if (entry->d_type == DT_REG) { // reguläre Datei
+            string name = entry->d_name;
 
             if (name.size() > 4 && name.substr(name.size() - 4) == ".msg") {
                 int id = atoi(name.substr(0, name.size() - 4).c_str());
@@ -105,10 +123,12 @@ bool MailStore::listMessages(const std::string &username, std::vector<std::strin
     }
     closedir(dir);
 
-    std::sort(ids.begin(), ids.end());
+    // Nachrichten IDs sortieren (aufsteigend)
+    sort(ids.begin(), ids.end());
 
+    // Für jede ID die Datei öffnen und nur den Betreff lesen
     for (int id : ids) {
-        std::string filename = userDir + "/" + std::to_string(id) + ".msg";
+        string filename = userDir + "/" + to_string(id) + ".msg";
         FILE *f = fopen(filename.c_str(), "r");
         if (!f) {
             continue;
@@ -117,12 +137,12 @@ bool MailStore::listMessages(const std::string &username, std::vector<std::strin
         char *line = nullptr;
         size_t len = 0;
 
-        getline(&line, &len, f); // sender
-        getline(&line, &len, f); // receiver
+        getline(&line, &len, f); // sender (ignoriert)
+        getline(&line, &len, f); // receiver (ignoriert)
         ssize_t n = getline(&line, &len, f); // subject
 
         if (n > 0) {
-            std::string subject(line, static_cast<size_t>(n));
+            string subject(line, static_cast<size_t>(n));
             trimNewline(subject);
             subjects.push_back(subject);
         }
@@ -136,13 +156,15 @@ bool MailStore::listMessages(const std::string &username, std::vector<std::strin
     return true;
 }
 
-bool MailStore::readMessage(const std::string &username,
+// Komplette Nachricht lesen (Sender, Empfänger, Betreff, Body)
+bool MailStore::readMessage(const string &username,
                             int msgNumber,
-                            std::string &sender,
-                            std::string &receiver,
-                            std::string &subject,
-                            std::string &body) {
+                            string &sender,
+                            string &receiver,
+                            string &subject,
+                            string &body) {
 
+    // Outputs vorab leeren
     sender.clear();
     receiver.clear();
     subject.clear();
@@ -152,9 +174,10 @@ bool MailStore::readMessage(const std::string &username,
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(mtx_);
+    lock_guard<mutex> lock(mtx_);
 
-    std::string filename = baseDir_ + "/" + username + "/" + std::to_string(msgNumber) + ".msg";
+    // Pfad zur konkreten Nachricht
+    string filename = baseDir_ + "/" + username + "/" + to_string(msgNumber) + ".msg";
     FILE *f = fopen(filename.c_str(), "r");
     if (!f) {
         return false;
@@ -164,39 +187,37 @@ bool MailStore::readMessage(const std::string &username,
     size_t len = 0;
     ssize_t n;
 
+    // Zeile 1: Sender
     n = getline(&line, &len, f);
     if (n <= 0) {
         fclose(f);
-        if (line) {
-            free(line);
-        }
+        if (line) free(line);
         return false;
     }
     sender.assign(line, static_cast<size_t>(n));
     trimNewline(sender);
 
+    // Zeile 2: Empfänger
     n = getline(&line, &len, f);
     if (n <= 0) {
         fclose(f);
-        if (line) {
-            free(line);
-        }
+        if (line) free(line);
         return false;
     }
     receiver.assign(line, static_cast<size_t>(n));
     trimNewline(receiver);
 
+    // Zeile 3: Betreff
     n = getline(&line, &len, f);
     if (n <= 0) {
         fclose(f);
-        if (line) {
-            free(line);
-        }
+        if (line) free(line);
         return false;
     }
     subject.assign(line, static_cast<size_t>(n));
     trimNewline(subject);
 
+    // Rest: Body (kann auch leer sein)
     body.clear();
     while ((n = getline(&line, &len, f)) > 0) {
         body.append(line, static_cast<size_t>(n));
@@ -209,33 +230,37 @@ bool MailStore::readMessage(const std::string &username,
     return true;
 }
 
-bool MailStore::deleteMessage(const std::string &username, int msgNumber) {
+// Nachricht löschen (entsprechende .msg Datei entfernen)
+bool MailStore::deleteMessage(const string &username, int msgNumber) {
     if (!isValidUsername(username) || msgNumber <= 0) {
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(mtx_);
+    lock_guard<mutex> lock(mtx_);
 
-    std::string filename = baseDir_ + "/" + username + "/" + std::to_string(msgNumber) + ".msg";
+    string filename = baseDir_ + "/" + username + "/" + to_string(msgNumber) + ".msg";
     int res = unlink(filename.c_str());
 
     return (res == 0);
 }
 
-void MailStore::trimNewline(std::string &s) {
+// Entfernt trailing \n / \r aus einem String
+void MailStore::trimNewline(string &s) {
     while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
         s.pop_back();
     }
 }
 
-void MailStore::mkdirIfNotExists(const std::string &path) {
+// Legt ein Verzeichnis an, falls es noch nicht existiert
+void MailStore::mkdirIfNotExists(const string &path) {
     struct stat st {};
     if (stat(path.c_str(), &st) == -1) {
         mkdir(path.c_str(), 0755);
     }
 }
 
-int MailStore::getNextMessageId(const std::string &userDir) {
+// Ermittelt die nächste freie Message-ID im Nutzerverzeichnis
+int MailStore::getNextMessageId(const string &userDir) {
     DIR *dir = opendir(userDir.c_str());
 
     int maxId = 0;
@@ -243,7 +268,7 @@ int MailStore::getNextMessageId(const std::string &userDir) {
         struct dirent *entry;
         while ((entry = readdir(dir)) != nullptr) {
             if (entry->d_type == DT_REG) {
-                std::string name = entry->d_name;
+                string name = entry->d_name;
                 if (name.size() > 4 && name.substr(name.size() - 4) == ".msg") {
                     int id = atoi(name.substr(0, name.size() - 4).c_str());
                     if (id > maxId) {
@@ -254,5 +279,6 @@ int MailStore::getNextMessageId(const std::string &userDir) {
         }
         closedir(dir);
     }
+    // Nächste ID ist maxId + 1 (startet bei 1)
     return maxId + 1;
 }

@@ -6,90 +6,116 @@
 #include <sstream>
 
 namespace {
-constexpr int MAX_ATTEMPTS = 3;
-constexpr int BAN_SECONDS = 60;
+    // Wie oft ein Login scheitern darf, bevor gesperrt wird
+    constexpr int MAX_ATTEMPTS = 3;
+
+    // Wie lange eine IP gesperrt bleibt (Sekunden)
+    constexpr int BAN_SECONDS = 60;
 }
 
-BlacklistManager::BlacklistManager(const std::string &storageFile)
+using namespace std;
+
+BlacklistManager::BlacklistManager(const string &storageFile)
     : storageFile_(storageFile) {
-    load();
-    cleanupExpired();
+    load();           // gespeicherte Sperren laden
+    cleanupExpired(); // abgelaufene Einträge sofort entfernen
 }
 
-bool BlacklistManager::isBlacklisted(const std::string &ip) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    cleanupExpired();
+// Prüfen, ob eine IP aktuell gesperrt ist
+bool BlacklistManager::isBlacklisted(const string &ip) {
+    lock_guard<mutex> lock(mtx_);
+    cleanupExpired(); // alte Sperren entfernen
     auto it = blacklist_.find(ip);
-    return it != blacklist_.end() && it->second > std::time(nullptr);
+
+    // Nur gesperrt, wenn Ablaufzeit in der Zukunft liegt
+    return it != blacklist_.end() && it->second > time(nullptr);
 }
 
-bool BlacklistManager::recordFailure(const std::string &ip, const std::string &username) {
-    std::lock_guard<std::mutex> lock(mtx_);
+// Fehlversuch protokollieren und ggf. sperren
+bool BlacklistManager::recordFailure(const string &ip, const string &username) {
+    lock_guard<mutex> lock(mtx_);
     cleanupExpired();
 
-    std::string key = attemptKey(ip, username);
+    // Key kombiniert IP + Username → verhindert Überschneidung
+    string key = attemptKey(ip, username);
+
+    // Anzahl der Fehlversuche hochzählen
     int count = ++attempts_[key];
 
+    // Wenn max. Versuche überschritten sind → IP bannen
     if (count >= MAX_ATTEMPTS) {
-        std::time_t until = std::time(nullptr) + BAN_SECONDS;
-        blacklist_[ip] = until;
-        attempts_.erase(key);
-        persist();
-        return true;
+        time_t until = time(nullptr) + BAN_SECONDS;
+        blacklist_[ip] = until; // Sperre eintragen
+        attempts_.erase(key);   // Fehlversuchs-Tracker zurücksetzen
+        persist();              // Datei speichern
+        return true;            // true → wurde gebannt
     }
-    return false;
+    return false;               // false → noch kein Bann
 }
 
-void BlacklistManager::recordSuccess(const std::string &ip, const std::string &username) {
-    std::lock_guard<std::mutex> lock(mtx_);
+// Erfolgreicher Login → Fehlversuche zurücksetzen
+void BlacklistManager::recordSuccess(const string &ip, const string &username) {
+    lock_guard<mutex> lock(mtx_);
     attempts_.erase(attemptKey(ip, username));
 }
 
+// Blacklist aus Datei einlesen
 void BlacklistManager::load() {
-    std::ifstream in(storageFile_);
+    ifstream in(storageFile_);
     if (!in.is_open()) {
-        return;
+        return; // Datei existiert evtl. noch nicht → kein Problem
     }
 
-    std::string ip;
-    std::time_t until;
+    string ip;
+    time_t until;
+
+    // Format: "<ip> <timestamp>"
     while (in >> ip >> until) {
-        if (until > std::time(nullptr)) {
+        // Nur aktive Sperren laden
+        if (until > time(nullptr)) {
             blacklist_[ip] = until;
         }
     }
 }
 
+// Blacklist in Datei speichern
 void BlacklistManager::persist() {
-    std::ofstream out(storageFile_, std::ios::trunc);
+    ofstream out(storageFile_, ios::trunc);
     if (!out.is_open()) {
-        std::cerr << "Kann Blacklist nicht schreiben: " << storageFile_ << std::endl;
+        cerr << "Kann Blacklist nicht schreiben: " << storageFile_ << endl;
         return;
     }
 
+    // Nur aktive Sperren persistieren
     for (const auto &entry : blacklist_) {
-        if (entry.second > std::time(nullptr)) {
+        if (entry.second > time(nullptr)) {
             out << entry.first << ' ' << entry.second << '\n';
         }
     }
 }
 
+// Löscht alle Einträge, deren Bannzeit abgelaufen ist
 void BlacklistManager::cleanupExpired() {
     bool changed = false;
-    std::time_t now = std::time(nullptr);
+    time_t now = time(nullptr);
+
     for (auto it = blacklist_.begin(); it != blacklist_.end();) {
         if (it->second <= now) {
+            // Bann abgelaufen → löschen
             it = blacklist_.erase(it);
             changed = true;
         } else {
             ++it;
         }
     }
+
+    // Nur dann erneut speichern, wenn sich etwas geändert hat
     if (changed) {
         persist();
     }
 }
 
-std::string BlacklistManager::attemptKey(const std::string &ip, const std::string &username) {
-    return ip + "|" + username;
+// Baut einen eindeutigen Schlüssel für Fehlversuche
+string BlacklistManager::attemptKey(const string &ip, const string &username) {
+    return ip + "|" + username; // "|" trennt eindeutig
 }
