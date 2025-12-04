@@ -49,7 +49,20 @@ bool LdapAuthenticator::authenticate(const std::string &username, const std::str
         return false;
     }
 
-    rc = ldap_simple_bind_s(ld, dn, password.c_str());
+    struct berval cred;
+    cred.bv_val = const_cast<char*>(password.c_str());
+    cred.bv_len = password.size();
+
+    rc = ldap_sasl_bind_s(
+        ld,
+        dn,
+        LDAP_SASL_SIMPLE,
+        &cred,
+        nullptr,
+        nullptr,
+        nullptr
+    );
+    
     if (rc != LDAP_SUCCESS) {
         std::cerr << "LDAP bind fehlgeschlagen: " << ldap_err2string(rc) << std::endl;
     }

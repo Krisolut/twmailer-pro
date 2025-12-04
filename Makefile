@@ -1,5 +1,7 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -pthread
+CXXFLAGS = -std=c++17 -Wall -Wextra -pthread \
+           -I/usr/include/x86_64-linux-gnu \
+           -DLDAP_DEPRECATED=1
 LDFLAGS = -lldap -llber
 
 SERVER_SOURCES = twmailer-server.cpp Server.cpp ClientSession.cpp MailStore.cpp BlacklistManager.cpp LdapAuthenticator.cpp
