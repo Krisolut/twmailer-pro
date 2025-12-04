@@ -15,25 +15,29 @@
 #include <vector>
 
 namespace {
-constexpr size_t MAX_SUBJECT = 80;
+    constexpr size_t MAX_SUBJECT = 80; // maximale Betrefflänge
 }
 
+using namespace std;
+
 ClientSession::ClientSession(int socketFD,
-                             std::string clientIp,
+                             string clientIp,
                              MailStore &store,
                              BlacklistManager &blacklist,
                              LdapAuthenticator &authenticator)
     : sockfd_(socketFD),
-      clientIp_(std::move(clientIp)),
+      clientIp_(move(clientIp)),
       store_(store),
       blacklist_(blacklist),
       authenticator_(authenticator) {}
 
-bool ClientSession::sendAll(const std::string &data) const {
+// Schickt eine beliebige Menge an Bytes über den Socket
+bool ClientSession::sendAll(const string &data) const {
     const char *buf = data.c_str();
     size_t total = 0;
     size_t len = data.size();
 
+    // Solange weiterschicken, bis alles raus ist
     while (total < len) {
         ssize_t n = send(sockfd_, buf + total, len - total, 0);
         if (n <= 0) {
@@ -44,7 +48,8 @@ bool ClientSession::sendAll(const std::string &data) const {
     return true;
 }
 
-bool ClientSession::recvLine(std::string &line) const {
+// Liest eine Zeile (\n-terminiert) vom Socket
+bool ClientSession::recvLine(string &line) const {
     line.clear();
     char c;
 
@@ -60,6 +65,7 @@ bool ClientSession::recvLine(std::string &line) const {
         line.push_back(c);
     }
 
+    // Entferne \r falls vorhanden (Windows-Style)
     if (!line.empty() && line.back() == '\r') {
         line.pop_back();
     }
@@ -67,18 +73,23 @@ bool ClientSession::recvLine(std::string &line) const {
     return true;
 }
 
+// LOGIN-Befehl: User & Passwort lesen und authentifizieren
 bool ClientSession::handleLogin() {
-    std::string user;
-    std::string pass;
+    string user;
+    string pass;
+
+    // Erwartet 2 Zeilen: Username, Passwort
     if (!recvLine(user) || !recvLine(pass)) {
         return false;
     }
 
+    // Falls IP geblacklistet → sofortiger Fehler
     if (blacklist_.isBlacklisted(clientIp_)) {
         sendAll("ERR\n");
         return true;
     }
 
+    // LDAP-Auth
     if (authenticator_.authenticate(user, pass)) {
         authenticated_ = true;
         username_ = user;
@@ -88,32 +99,36 @@ bool ClientSession::handleLogin() {
         bool banned = blacklist_.recordFailure(clientIp_, user);
         sendAll("ERR\n");
         if (banned) {
-            std::cerr << "IP " << clientIp_ << " gesperrt nach Fehlversuchen" << std::endl;
+            cerr << "IP " << clientIp_ << " gesperrt nach Fehlversuchen" << endl;
         }
     }
     return true;
 }
 
+// SEND-Befehl: Nachricht absenden
 void ClientSession::handleSend() {
     if (!authenticated_) {
         sendAll("ERR\n");
         return;
     }
 
-    std::string receiver;
-    std::string subject;
+    string receiver;
+    string subject;
 
+    // Empfänger & Betreff lesen
     if (!recvLine(receiver) || !recvLine(subject)) {
         return;
     }
 
+    // Betreff ggf. kürzen
     if (subject.size() > MAX_SUBJECT) {
         subject = subject.substr(0, MAX_SUBJECT);
     }
 
-    std::string body;
+    // Body lesen, bis "." allein steht
+    string body;
     while (true) {
-        std::string line;
+        string line;
         if (!recvLine(line)) {
             return;
         }
@@ -123,46 +138,52 @@ void ClientSession::handleSend() {
         body += line + "\n";
     }
 
+    // Nachricht speichern
     bool ok = store_.storeMessage(username_, receiver, subject, body);
     sendAll(ok ? "OK\n" : "ERR\n");
 }
 
+// LIST-Befehl: Liste aller Betreffzeilen senden
 void ClientSession::handleList() {
     if (!authenticated_) {
         sendAll("ERR\n");
         return;
     }
 
-    std::vector<std::string> subjects;
+    vector<string> subjects;
     store_.listMessages(username_, subjects);
 
-    std::string resp = std::to_string(subjects.size()) + "\n";
+    // Anzahl + jede Zeile
+    string resp = to_string(subjects.size()) + "\n";
     for (const auto &s : subjects) {
         resp += s + "\n";
     }
     sendAll(resp);
 }
 
+// READ-Befehl: eine Nachricht vollständig ausgeben
 void ClientSession::handleRead() {
     if (!authenticated_) {
         sendAll("ERR\n");
         return;
     }
 
-    std::string msgNumStr;
+    string msgNumStr;
     if (!recvLine(msgNumStr)) {
         return;
     }
 
-    int msgNum = std::atoi(msgNumStr.c_str());
-    std::string sender, receiver, subject, body;
+    int msgNum = atoi(msgNumStr.c_str());
+    string sender, receiver, subject, body;
 
+    // Nachricht aus dem Store holen
     if (!store_.readMessage(username_, msgNum, sender, receiver, subject, body)) {
         sendAll("ERR\n");
         return;
     }
 
-    std::string resp = "OK\n";
+    // Ausgabeformat
+    string resp = "OK\n";
     resp += sender + "\n";
     resp += receiver + "\n";
     resp += subject + "\n";
@@ -177,23 +198,26 @@ void ClientSession::handleRead() {
     sendAll(resp);
 }
 
+// DEL-Befehl: Nachricht löschen
 void ClientSession::handleDelete() {
     if (!authenticated_) {
         sendAll("ERR\n");
         return;
     }
 
-    std::string msgNumStr;
+    string msgNumStr;
     if (!recvLine(msgNumStr)) {
         return;
     }
 
-    int msgNum = std::atoi(msgNumStr.c_str());
+    int msgNum = atoi(msgNumStr.c_str());
     bool ok = store_.deleteMessage(username_, msgNum);
     sendAll(ok ? "OK\n" : "ERR\n");
 }
 
+// Haupt-Loop der Session
 void ClientSession::run() {
+    // Sofortiger Block falls IP gesperrt
     if (blacklist_.isBlacklisted(clientIp_)) {
         sendAll("ERR\n");
         close(sockfd_);
@@ -201,11 +225,12 @@ void ClientSession::run() {
     }
 
     while (true) {
-        std::string cmd;
+        string cmd;
         if (!recvLine(cmd)) {
             break;
         }
 
+        // Kommandos
         if (cmd == "LOGIN") {
             if (!handleLogin()) {
                 break;
@@ -225,5 +250,6 @@ void ClientSession::run() {
         }
     }
 
+    // Verbindung sauber schließen
     close(sockfd_);
 }
