@@ -4,18 +4,20 @@
 
 #include "Server.h"
 
+using namespace std;
+
 int main(int argc, char *argv[]) {
     if (argc != 3) {
-        std::cerr << "Usage: ./twmailer-server <port> <mail-spool-directory>\n";
+        cerr << "Usage: ./twmailer-server <port> <mail-spool-directory>\n";
         return 1;
     }
 
-    int port = std::atoi(argv[1]);
-    std::string spoolDir = argv[2];
+    int port = atoi(argv[1]);
+    string spoolDir = argv[2];
 
     Server server(port, spoolDir);
     if (!server.run()) {
-        std::cerr << "Server konnte nicht gestartet werden." << std::endl;
+        cerr << "Server konnte nicht gestartet werden." << endl;
         return 1;
     }
 

@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+using namespace std;
 namespace {
     // Hilfsfunktion: prüft, ob ein Pfad ein Verzeichnis ist
     bool isDirectory(const string &path) {
@@ -14,8 +15,6 @@ namespace {
         return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
     }
 } 
-
-using namespace std;
 
 // Username-Regeln: nicht leer, max 8 Zeichen, nur [a-z0-9]
 bool MailStore::isValidUsername(const string &u) {
